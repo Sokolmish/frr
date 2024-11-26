@@ -443,7 +443,12 @@ struct bfd_vrf_global {
 	int bg_echov6;
 	struct vrf *vrf;
 
-	struct event *bg_ev[6];
+	struct event *bg_shop_ev;
+	struct event *bg_mhop_ev;
+	struct event *bg_shop6_ev;
+	struct event *bg_mhop6_ev;
+	struct event *bg_echo_ev;
+	struct event *bg_echov6_ev;
 };
 
 /* Forward declaration of data plane context struct. */
@@ -534,6 +539,7 @@ void ptm_bfd_echo_snd(struct bfd_session *bfd);
 void ptm_bfd_echo_fp_snd(struct bfd_session *bfd);
 
 void bfd_recv_cb(struct event *t);
+void bfd_recv_echo_cb(struct event *t);
 
 
 /*
