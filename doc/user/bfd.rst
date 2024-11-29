@@ -79,6 +79,14 @@ may also be specified (:ref:`common-invocation-options`).
    When using UNIX sockets don't forget to check the file permissions
    before attempting to use it.
 
+.. option:: -l, --localaddr <address>
+
+   Specify the IP address for bfdd to accept packets on, rather than its
+   default of ``0.0.0.0`` / ``::``. This can be useful to constrain bfdd to
+   an internal address, or to run multiple bfdd processes on one host.
+   Multiple addresses can be specified. This option doesn't affect echo-mode
+   connections.
+
 
 .. _bfd-commands:
 

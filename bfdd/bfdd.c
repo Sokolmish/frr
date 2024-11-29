@@ -30,6 +30,7 @@
 DEFINE_MGROUP(BFDD, "Bidirectional Forwarding Detection Daemon");
 DEFINE_MTYPE(BFDD, BFDD_CLIENT, "BFD client data");
 DEFINE_MTYPE(BFDD, BFDD_CLIENT_NOTIFICATION, "BFD client notification data");
+DEFINE_MTYPE_STATIC(BFDD, BFDD_LOCAL_ADDR_STR, "local address string");
 
 /* Master of threads. */
 struct event_loop *master;
@@ -73,6 +74,8 @@ static void sigterm_handler(void)
 	bfd_vrf_terminate();
 
 	bfdd_zclient_terminate();
+
+	list_delete(&bglobal.bg_local_addresses);
 
 	/* Terminate and free() FRR related memory. */
 	frr_fini();
@@ -132,6 +135,7 @@ FRR_DAEMON_INFO(bfdd, BFD,
 #define OPTION_DPLANEADDR 2000
 static const struct option longopts[] = {
 	{"dplaneaddr", required_argument, NULL, OPTION_DPLANEADDR},
+	{"localaddr", required_argument, NULL, 'l'},
 	{0}
 };
 
@@ -189,6 +193,31 @@ parse_port(const char *str)
 	}
 
 	return (uint16_t)rv;
+}
+
+static int add_local_address(const char *addr_str)
+{
+	struct sockaddr_any dummy_sa;
+
+	if (strtosa(addr_str, &dummy_sa)) {
+		zlog_err("Invalid local adress: '%s'", addr_str);
+		return -1;
+	}
+	if (dummy_sa.sa_sin.sin_family != AF_INET &&
+	    dummy_sa.sa_sin6.sin6_family != AF_INET6) {
+		zlog_err("Invalid adress family %d of '%s', "
+			 "should be AF_INET/AF_INET6",
+			 (int)dummy_sa.sa_sin.sin_family, addr_str);
+		return -1;
+	}
+
+	listnode_add_sort_nodup(bglobal.bg_local_addresses,
+				XSTRDUP(MTYPE_BFDD_LOCAL_ADDR_STR, addr_str));
+	return 0;
+}
+
+static void free_local_address(void *data) {
+	XFREE(MTYPE_BFDD_LOCAL_ADDR_STR, data);
 }
 
 static void
@@ -327,12 +356,17 @@ int main(int argc, char *argv[])
 
 	bglobal.bg_use_dplane = false;
 
+	bglobal.bg_local_addresses = list_new();
+	bglobal.bg_local_addresses->cmp = (int (*)(void *, void *))strcmp;
+	bglobal.bg_local_addresses->del = free_local_address;
+
 	/* Initialize system sockets. */
 	bg_init();
 
 	frr_preinit(&bfdd_di, argc, argv);
-	frr_opt_add("", longopts,
-		    "      --dplaneaddr   Specify BFD data plane address\n");
+	frr_opt_add("l:", longopts,
+		    "      --dplaneaddr   Specify BFD data plane address\n"
+		    "  -l, --localaddr    Bind local sockets to specified address\n");
 
 	while (true) {
 		opt = frr_getopt(argc, argv, NULL);
@@ -345,9 +379,21 @@ int main(int argc, char *argv[])
 			bglobal.bg_use_dplane = true;
 			break;
 
+		case 'l':
+			if (add_local_address(optarg))
+				return 1;
+			break;
+
 		default:
 			frr_help_exit(1);
 		}
+	}
+
+	if (list_isempty(bglobal.bg_local_addresses)) {
+		if (add_local_address("0.0.0.0"))
+			zlog_fatal("Failed to add '0.0.0.0'. Abort.");
+		if (add_local_address("::"))
+			zlog_fatal("Failed to add '::'. Abort.");
 	}
 
 	/* Initialize FRR infrastructure. */
