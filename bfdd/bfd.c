@@ -1839,13 +1839,13 @@ void bfd_vrf_toggle_echo(struct bfd_vrf_global *bfd_vrf)
 	 */
 	if (!has_echo.enabled) {
 		if (bfd_vrf->bg_echo != -1) {
-			event_cancel(&bfd_vrf->bg_ev[4]);
+			event_cancel(&bfd_vrf->bg_echo_ev);
 			close(bfd_vrf->bg_echo);
 			bfd_vrf->bg_echo = -1;
 		}
 
 		if (bfd_vrf->bg_echov6 != -1) {
-			event_cancel(&bfd_vrf->bg_ev[5]);
+			event_cancel(&bfd_vrf->bg_echov6_ev);
 			close(bfd_vrf->bg_echov6);
 			bfd_vrf->bg_echov6 = -1;
 		}
@@ -1860,10 +1860,12 @@ void bfd_vrf_toggle_echo(struct bfd_vrf_global *bfd_vrf)
 	if (bfd_vrf->bg_echov6 == -1)
 		bfd_vrf->bg_echov6 = bp_echov6_socket(bfd_vrf->vrf);
 
-	if (bfd_vrf->bg_ev[4] == NULL && bfd_vrf->bg_echo != -1)
-		event_add_read(master, bfd_recv_cb, bfd_vrf, bfd_vrf->bg_echo, &bfd_vrf->bg_ev[4]);
-	if (bfd_vrf->bg_ev[5] == NULL && bfd_vrf->bg_echov6 != -1)
-		event_add_read(master, bfd_recv_cb, bfd_vrf, bfd_vrf->bg_echov6, &bfd_vrf->bg_ev[5]);
+	if (bfd_vrf->bg_echo_ev == NULL && bfd_vrf->bg_echo != -1)
+		event_add_read(master, bfd_recv_echo_cb, bfd_vrf,
+			       bfd_vrf->bg_echo, &bfd_vrf->bg_echo_ev);
+	if (bfd_vrf->bg_echov6_ev == NULL && bfd_vrf->bg_echov6 != -1)
+		event_add_read(master, bfd_recv_echo_cb, bfd_vrf,
+			       bfd_vrf->bg_echov6, &bfd_vrf->bg_echov6_ev);
 }
 
 /*
@@ -1958,18 +1960,18 @@ static int bfd_vrf_enable(struct vrf *vrf)
 	if (bvrf->bg_mhop6 == -1)
 		bvrf->bg_mhop6 = bp_udp6_mhop(vrf);
 
-	if (bvrf->bg_ev[0] == NULL && bvrf->bg_shop != -1)
+	if (bvrf->bg_shop_ev == NULL && bvrf->bg_shop != -1)
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_shop,
-			       &bvrf->bg_ev[0]);
-	if (bvrf->bg_ev[1] == NULL && bvrf->bg_mhop != -1)
+			       &bvrf->bg_shop_ev);
+	if (bvrf->bg_mhop_ev == NULL && bvrf->bg_mhop != -1)
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_mhop,
-			       &bvrf->bg_ev[1]);
-	if (bvrf->bg_ev[2] == NULL && bvrf->bg_shop6 != -1)
+			       &bvrf->bg_mhop_ev);
+	if (bvrf->bg_shop6_ev == NULL && bvrf->bg_shop6 != -1)
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_shop6,
-			       &bvrf->bg_ev[2]);
-	if (bvrf->bg_ev[3] == NULL && bvrf->bg_mhop6 != -1)
+			       &bvrf->bg_shop6_ev);
+	if (bvrf->bg_mhop6_ev == NULL && bvrf->bg_mhop6 != -1)
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_mhop6,
-			       &bvrf->bg_ev[3]);
+			       &bvrf->bg_mhop6_ev);
 
 	/* Toggle echo if VRF was disabled. */
 	bfd_vrf_toggle_echo(bvrf);
@@ -2000,12 +2002,12 @@ static int bfd_vrf_disable(struct vrf *vrf)
 		zlog_debug("VRF disable %s id %d", vrf->name, vrf->vrf_id);
 
 	/* Disable read/write poll triggering. */
-	EVENT_OFF(bvrf->bg_ev[0]);
-	EVENT_OFF(bvrf->bg_ev[1]);
-	EVENT_OFF(bvrf->bg_ev[2]);
-	EVENT_OFF(bvrf->bg_ev[3]);
-	EVENT_OFF(bvrf->bg_ev[4]);
-	EVENT_OFF(bvrf->bg_ev[5]);
+	event_cancel(&bvrf->bg_echo_ev);
+	event_cancel(&bvrf->bg_shop_ev);
+	event_cancel(&bvrf->bg_mhop_ev);
+	event_cancel(&bvrf->bg_shop6_ev);
+	event_cancel(&bvrf->bg_mhop6_ev);
+	event_cancel(&bvrf->bg_echov6_ev);
 
 	/* Close all descriptors. */
 	socket_close(&bvrf->bg_echo);

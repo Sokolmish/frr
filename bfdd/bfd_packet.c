@@ -64,9 +64,9 @@ ssize_t bfd_recv_fp_echo(int sd, uint8_t *msgbuf, size_t msgbuflen,
 
 /* socket related prototypes */
 static void bp_set_ipopts(int sd);
-static void bp_bind_ip(int sd, uint16_t port);
+static int bp_bind_ip(int sd, uint16_t port);
 static void bp_set_ipv6opts(int sd);
-static void bp_bind_ipv6(int sd, uint16_t port);
+static int bp_bind_ipv6(int sd, uint16_t port);
 
 
 /*
@@ -706,29 +706,21 @@ ssize_t bfd_recv_ipv6(int sd, uint8_t *msgbuf, size_t msgbuflen, uint8_t *ttl,
 static void bfd_sd_reschedule(struct bfd_vrf_global *bvrf, int sd)
 {
 	if (sd == bvrf->bg_shop) {
-		EVENT_OFF(bvrf->bg_ev[0]);
+		event_cancel(&bvrf->bg_shop_ev);
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_shop,
-			       &bvrf->bg_ev[0]);
+			       &bvrf->bg_shop_ev);
 	} else if (sd == bvrf->bg_mhop) {
-		EVENT_OFF(bvrf->bg_ev[1]);
+		event_cancel(&bvrf->bg_mhop_ev);
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_mhop,
-			       &bvrf->bg_ev[1]);
+			       &bvrf->bg_mhop_ev);
 	} else if (sd == bvrf->bg_shop6) {
-		EVENT_OFF(bvrf->bg_ev[2]);
+		event_cancel(&bvrf->bg_shop6_ev);
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_shop6,
-			       &bvrf->bg_ev[2]);
+			       &bvrf->bg_shop6_ev);
 	} else if (sd == bvrf->bg_mhop6) {
-		EVENT_OFF(bvrf->bg_ev[3]);
+		event_cancel(&bvrf->bg_mhop6_ev);
 		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_mhop6,
-			       &bvrf->bg_ev[3]);
-	} else if (sd == bvrf->bg_echo) {
-		EVENT_OFF(bvrf->bg_ev[4]);
-		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_echo,
-			       &bvrf->bg_ev[4]);
-	} else if (sd == bvrf->bg_echov6) {
-		EVENT_OFF(bvrf->bg_ev[5]);
-		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_echov6,
-			       &bvrf->bg_ev[5]);
+			       &bvrf->bg_mhop6_ev);
 	}
 }
 
@@ -822,11 +814,8 @@ void bfd_recv_cb(struct event *t)
 	/* Schedule next read. */
 	bfd_sd_reschedule(bvrf, sd);
 
-	/* Handle echo packets. */
-	if (sd == bvrf->bg_echo || sd == bvrf->bg_echov6) {
-		ptm_bfd_process_echo_pkt(bvrf, sd);
-		return;
-	}
+	assert(sd == bvrf->bg_shop || sd == bvrf->bg_mhop ||
+	       sd == bvrf->bg_shop6 || sd == bvrf->bg_mhop6);
 
 	/* Sanitize input/output. */
 	memset(&local, 0, sizeof(local));
@@ -1042,6 +1031,27 @@ void bfd_recv_cb(struct event *t)
 		/* Send the control packet with the final bit immediately. */
 		ptm_bfd_snd(bfd, 1);
 	}
+}
+
+void bfd_recv_echo_cb(struct event *t)
+{
+	int sd = EVENT_FD(t);
+	struct bfd_vrf_global *bvrf = EVENT_ARG(t);
+
+	assert(sd == bvrf->bg_echo || sd == bvrf->bg_echov6);
+
+	/* Rechedule next read. */
+	if (sd == bvrf->bg_echo) {
+		event_cancel(&bvrf->bg_echo_ev);
+		event_add_read(master, bfd_recv_echo_cb, bvrf, bvrf->bg_echo,
+			&bvrf->bg_echo_ev);
+	} else {
+		event_cancel(&bvrf->bg_echov6_ev);
+		event_add_read(master, bfd_recv_echo_cb, bvrf, bvrf->bg_echov6,
+			&bvrf->bg_echov6_ev);
+	}
+
+	ptm_bfd_process_echo_pkt(bvrf, sd);
 }
 
 /*
@@ -1340,7 +1350,7 @@ static void bp_set_ipopts(int sd)
 #endif /* BFD_BSD */
 }
 
-static void bp_bind_ip(int sd, uint16_t port)
+static int bp_bind_ip(int sd, uint16_t port)
 {
 	struct sockaddr_in sin;
 
@@ -1348,13 +1358,16 @@ static void bp_bind_ip(int sd, uint16_t port)
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = htonl(INADDR_ANY);
 	sin.sin_port = htons(port);
-	if (bind(sd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
-		zlog_fatal("bind-ip: bind: %s", strerror(errno));
+	if (bind(sd, (struct sockaddr *)&sin, sizeof(sin)) == -1) {
+		zlog_err("bind-ip: bind: %s", strerror(errno));
+		return -1;
+	}
+	return 0;
 }
 
 int bp_udp_shop(const struct vrf *vrf)
 {
-	int sd;
+	int sd, rv;
 
 	frr_with_privs(&bglobal.bfdd_privs) {
 		sd = vrf_socket(AF_INET, SOCK_DGRAM, PF_UNSPEC, vrf->vrf_id,
@@ -1364,13 +1377,19 @@ int bp_udp_shop(const struct vrf *vrf)
 		zlog_fatal("udp-shop: socket: %s", strerror(errno));
 
 	bp_set_ipopts(sd);
-	bp_bind_ip(sd, BFD_DEFDESTPORT);
+
+	rv = bp_bind_ip(sd, BFD_DEFDESTPORT);
+	if (rv) {
+		socket_close(&sd);
+		zlog_fatal("Failed to bind IPv4 socket (fatal)");
+	}
+
 	return sd;
 }
 
 int bp_udp_mhop(const struct vrf *vrf)
 {
-	int sd;
+	int sd, rv;
 
 	frr_with_privs(&bglobal.bfdd_privs) {
 		sd = vrf_socket(AF_INET, SOCK_DGRAM, PF_UNSPEC, vrf->vrf_id,
@@ -1380,7 +1399,12 @@ int bp_udp_mhop(const struct vrf *vrf)
 		zlog_fatal("udp-mhop: socket: %s", strerror(errno));
 
 	bp_set_ipopts(sd);
-	bp_bind_ip(sd, BFD_DEF_MHOP_DEST_PORT);
+
+	rv = bp_bind_ip(sd, BFD_DEF_MHOP_DEST_PORT);
+	if (rv) {
+		socket_close(&sd);
+		zlog_fatal("Failed to bind IPv4 socket (fatal)");
+	}
 
 	return sd;
 }
@@ -1573,7 +1597,7 @@ static void bp_set_ipv6opts(int sd)
 			   ipv6_only, strerror(errno));
 }
 
-static void bp_bind_ipv6(int sd, uint16_t port)
+static int bp_bind_ipv6(int sd, uint16_t port)
 {
 	struct sockaddr_in6 sin6;
 
@@ -1584,13 +1608,16 @@ static void bp_bind_ipv6(int sd, uint16_t port)
 #ifdef HAVE_STRUCT_SOCKADDR_SA_LEN
 	sin6.sin6_len = sizeof(sin6);
 #endif /* HAVE_STRUCT_SOCKADDR_SA_LEN */
-	if (bind(sd, (struct sockaddr *)&sin6, sizeof(sin6)) == -1)
-		zlog_fatal("bind-ipv6: bind: %s", strerror(errno));
+	if (bind(sd, (struct sockaddr *)&sin6, sizeof(sin6)) == -1) {
+		zlog_err("bind-ipv6: bind: %s", strerror(errno));
+		return -1;
+	}
+	return 0;
 }
 
 int bp_udp6_shop(const struct vrf *vrf)
 {
-	int sd;
+	int sd, rv;
 
 	frr_with_privs(&bglobal.bfdd_privs) {
 		sd = vrf_socket(AF_INET6, SOCK_DGRAM, PF_UNSPEC, vrf->vrf_id,
@@ -1606,14 +1633,19 @@ int bp_udp6_shop(const struct vrf *vrf)
 	}
 
 	bp_set_ipv6opts(sd);
-	bp_bind_ipv6(sd, BFD_DEFDESTPORT);
+
+	rv = bp_bind_ipv6(sd, BFD_DEFDESTPORT);
+	if (rv) {
+		socket_close(&sd);
+		zlog_fatal("Failed to bind IPv6 socket (fatal)");
+	}
 
 	return sd;
 }
 
 int bp_udp6_mhop(const struct vrf *vrf)
 {
-	int sd;
+	int sd, rv;
 
 	frr_with_privs(&bglobal.bfdd_privs) {
 		sd = vrf_socket(AF_INET6, SOCK_DGRAM, PF_UNSPEC, vrf->vrf_id,
@@ -1629,7 +1661,12 @@ int bp_udp6_mhop(const struct vrf *vrf)
 	}
 
 	bp_set_ipv6opts(sd);
-	bp_bind_ipv6(sd, BFD_DEF_MHOP_DEST_PORT);
+
+	rv = bp_bind_ipv6(sd, BFD_DEF_MHOP_DEST_PORT);
+	if (rv) {
+		socket_close(&sd);
+		zlog_fatal("Failed to bind IPv6 socket (fatal)");
+	}
 
 	return sd;
 }
@@ -1689,7 +1726,7 @@ int bp_echo_socket(const struct vrf *vrf)
 #else
 int bp_echo_socket(const struct vrf *vrf)
 {
-	int s;
+	int s, rv;
 
 	frr_with_privs(&bglobal.bfdd_privs) {
 		s = vrf_socket(AF_INET, SOCK_DGRAM, 0, vrf->vrf_id, vrf->name);
@@ -1698,7 +1735,12 @@ int bp_echo_socket(const struct vrf *vrf)
 		zlog_fatal("echo-socket: socket: %s", strerror(errno));
 
 	bp_set_ipopts(s);
-	bp_bind_ip(s, BFD_DEF_ECHO_PORT);
+
+	rv = bp_bind_ip(s, BFD_DEF_ECHO_PORT);
+	if (rv) {
+		socket_close(&s);
+		zlog_fatal("Failed to bind IPv4 socket (fatal)");
+	}
 
 	return s;
 }
@@ -1706,7 +1748,7 @@ int bp_echo_socket(const struct vrf *vrf)
 
 int bp_echov6_socket(const struct vrf *vrf)
 {
-	int s;
+	int s, rv;
 
 	frr_with_privs(&bglobal.bfdd_privs) {
 		s = vrf_socket(AF_INET6, SOCK_DGRAM, 0, vrf->vrf_id, vrf->name);
@@ -1722,7 +1764,12 @@ int bp_echov6_socket(const struct vrf *vrf)
 	}
 
 	bp_set_ipv6opts(s);
-	bp_bind_ipv6(s, BFD_DEF_ECHO_PORT);
+
+	rv = bp_bind_ipv6(s, BFD_DEF_ECHO_PORT);
+	if (rv) {
+		socket_close(&s);
+		zlog_fatal("Failed to bind IPv6 socket (fatal)");
+	}
 
 	return s;
 }
