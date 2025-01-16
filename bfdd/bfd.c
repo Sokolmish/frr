@@ -23,6 +23,7 @@ DEFINE_MTYPE_STATIC(BFDD, BFDD_CONFIG, "long-lived configuration memory");
 DEFINE_MTYPE_STATIC(BFDD, BFDD_PROFILE, "long-lived profile memory");
 DEFINE_MTYPE_STATIC(BFDD, BFDD_SESSION_OBSERVER, "Session observer");
 DEFINE_MTYPE_STATIC(BFDD, BFDD_VRF, "BFD VRF");
+DEFINE_MTYPE_STATIC(BFDD, BFDD_LOCAL_SOCKETS, "BFD local sockets");
 
 /*
  * Prototypes
@@ -1920,10 +1921,6 @@ static int bfd_vrf_new(struct vrf *vrf)
 	vrf->info = bvrf;
 
 	/* Invalidate all sockets */
-	bvrf->bg_shop = -1;
-	bvrf->bg_mhop = -1;
-	bvrf->bg_shop6 = -1;
-	bvrf->bg_mhop6 = -1;
 	bvrf->bg_echo = -1;
 	bvrf->bg_echov6 = -1;
 
@@ -1940,8 +1937,56 @@ static int bfd_vrf_delete(struct vrf *vrf)
 	return 0;
 }
 
+static void
+bfd_local_sockets_add(struct bfd_vrf_global *bvrf, const char *addr_str)
+{
+	struct sockaddr_any sa;
+	struct bfd_local_sockets *lsocks;
+
+	lsocks = XCALLOC(MTYPE_BFDD_LOCAL_SOCKETS, sizeof(*lsocks));
+	lsocks->bvrf = bvrf;
+
+	if (strtosa(addr_str, &sa))
+		zlog_fatal("Invalid local adress: '%s'", addr_str);
+
+	if (sa.sa_sin.sin_family == AF_INET) {
+		lsocks->is_ipv6 = false;
+		lsocks->bg_shop = bp_udp_shop(bvrf->vrf, &sa.sa_sin);
+		lsocks->bg_mhop = bp_udp_mhop(bvrf->vrf, &sa.sa_sin);
+	} else if (sa.sa_sin6.sin6_family == AF_INET6) {
+		lsocks->is_ipv6 = true;
+		lsocks->bg_shop = bp_udp6_shop(bvrf->vrf, &sa.sa_sin6);
+		lsocks->bg_mhop = bp_udp6_mhop(bvrf->vrf, &sa.sa_sin6);
+	} else
+		zlog_fatal("Invalid AF %d", sa.sa_sin.sin_family);
+
+	if (lsocks->bg_shop != -1)
+		event_add_read(master, bfd_recv_cb, lsocks, lsocks->bg_shop,
+			       &lsocks->bg_shop_ev);
+	if (lsocks->bg_mhop != -1)
+		event_add_read(master, bfd_recv_cb, lsocks, lsocks->bg_mhop,
+			       &lsocks->bg_mhop_ev);
+
+	listnode_add(bvrf->sockets, lsocks);
+}
+
+static void
+bfd_local_sockets_del(void *data)
+{
+	struct bfd_local_sockets *lsocks = data;
+
+	/* All sockets should be closed yet. */
+	assert(lsocks->bg_shop == -1);
+	assert(lsocks->bg_mhop == -1);
+
+	XFREE(MTYPE_BFDD_LOCAL_SOCKETS, lsocks);
+}
+
 static int bfd_vrf_enable(struct vrf *vrf)
 {
+	struct listnode *node;
+	const char *addr_str;
+
 	struct bfd_vrf_global *bvrf = vrf->info;
 
 	if (bglobal.debug_zebra)
@@ -1951,27 +1996,13 @@ static int bfd_vrf_enable(struct vrf *vrf)
 	if (bglobal.bg_use_dplane)
 		goto skip_sockets;
 
-	if (bvrf->bg_shop == -1)
-		bvrf->bg_shop = bp_udp_shop(vrf);
-	if (bvrf->bg_mhop == -1)
-		bvrf->bg_mhop = bp_udp_mhop(vrf);
-	if (bvrf->bg_shop6 == -1)
-		bvrf->bg_shop6 = bp_udp6_shop(vrf);
-	if (bvrf->bg_mhop6 == -1)
-		bvrf->bg_mhop6 = bp_udp6_mhop(vrf);
+	if (bvrf->sockets == NULL) {
+		bvrf->sockets = list_new();
+		bvrf->sockets->del = bfd_local_sockets_del;
 
-	if (bvrf->bg_shop_ev == NULL && bvrf->bg_shop != -1)
-		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_shop,
-			       &bvrf->bg_shop_ev);
-	if (bvrf->bg_mhop_ev == NULL && bvrf->bg_mhop != -1)
-		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_mhop,
-			       &bvrf->bg_mhop_ev);
-	if (bvrf->bg_shop6_ev == NULL && bvrf->bg_shop6 != -1)
-		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_shop6,
-			       &bvrf->bg_shop6_ev);
-	if (bvrf->bg_mhop6_ev == NULL && bvrf->bg_mhop6 != -1)
-		event_add_read(master, bfd_recv_cb, bvrf, bvrf->bg_mhop6,
-			       &bvrf->bg_mhop6_ev);
+		for (ALL_LIST_ELEMENTS_RO(bglobal.bg_local_addresses, node, addr_str))
+			bfd_local_sockets_add(bvrf, addr_str);
+	}
 
 	/* Toggle echo if VRF was disabled. */
 	bfd_vrf_toggle_echo(bvrf);
@@ -1987,6 +2018,9 @@ skip_sockets:
 
 static int bfd_vrf_disable(struct vrf *vrf)
 {
+	struct listnode *node;
+	struct bfd_local_sockets *lsocks;
+
 	struct bfd_vrf_global *bvrf;
 
 	if (!vrf->info)
@@ -2001,20 +2035,24 @@ static int bfd_vrf_disable(struct vrf *vrf)
 	if (bglobal.debug_zebra)
 		zlog_debug("VRF disable %s id %d", vrf->name, vrf->vrf_id);
 
-	/* Disable read/write poll triggering. */
-	event_cancel(&bvrf->bg_echo_ev);
-	event_cancel(&bvrf->bg_shop_ev);
-	event_cancel(&bvrf->bg_mhop_ev);
-	event_cancel(&bvrf->bg_shop6_ev);
-	event_cancel(&bvrf->bg_mhop6_ev);
-	event_cancel(&bvrf->bg_echov6_ev);
+	if (bvrf->sockets) {
+		for (ALL_LIST_ELEMENTS_RO(bvrf->sockets, node, lsocks)) {
+			/* Disable read/write poll triggering. */
+			event_cancel(&lsocks->bg_shop_ev);
+			event_cancel(&lsocks->bg_mhop_ev);
 
-	/* Close all descriptors. */
+			/* IPv6 sockets might be closed from the beginning. */
+			if (lsocks->bg_shop != -1)
+				socket_close(&lsocks->bg_shop);
+			if (lsocks->bg_mhop != -1)
+				socket_close(&lsocks->bg_mhop);
+		}
+		list_delete(&bvrf->sockets);
+	}
+
+	event_cancel(&bvrf->bg_echo_ev);
+	event_cancel(&bvrf->bg_echov6_ev);
 	socket_close(&bvrf->bg_echo);
-	socket_close(&bvrf->bg_shop);
-	socket_close(&bvrf->bg_mhop);
-	socket_close(&bvrf->bg_shop6);
-	socket_close(&bvrf->bg_mhop6);
 	socket_close(&bvrf->bg_echov6);
 
 	return 0;

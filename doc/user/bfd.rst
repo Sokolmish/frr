@@ -79,6 +79,16 @@ may also be specified (:ref:`common-invocation-options`).
    When using UNIX sockets don't forget to check the file permissions
    before attempting to use it.
 
+.. option:: -l, --localaddr <address>
+
+   Specify the IP address for bfdd to accept packets on, rather than its
+   default of ``0.0.0.0`` / ``::``. This can be useful to constrain bfdd to
+   an internal address, or to run multiple bfdd processes on one host.
+   Multiple addresses can be specified. Bind to the addresses will be done in
+   all VRFs, but socket binding errors in non 0 VRF are allowed. If bind fails
+   in the VRF 0, bgpd will terminate. This option affect only single and
+   multihop connections, not echo-mode.
+
 
 .. _bfd-commands:
 

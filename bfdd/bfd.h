@@ -435,20 +435,29 @@ TAILQ_HEAD(obslist, bfd_session_observer);
  * Daemon specific code.
  */
 struct bfd_vrf_global {
-	int bg_shop;
-	int bg_mhop;
-	int bg_shop6;
-	int bg_mhop6;
+	/* List of `struct bfd_local_sockets` for shop and mhop modes */
+	struct list *sockets;
+
+	/* Sockets for echo mode */
 	int bg_echo;
 	int bg_echov6;
+
 	struct vrf *vrf;
 
-	struct event *bg_shop_ev;
-	struct event *bg_mhop_ev;
-	struct event *bg_shop6_ev;
-	struct event *bg_mhop6_ev;
 	struct event *bg_echo_ev;
 	struct event *bg_echov6_ev;
+};
+
+/* Set of shop and mhop sockets for each local address. */
+struct bfd_local_sockets {
+	struct bfd_vrf_global *bvrf;
+
+	int bg_shop;
+	int bg_mhop;
+	struct event *bg_shop_ev;
+	struct event *bg_mhop_ev;
+
+	bool is_ipv6;
 };
 
 /* Forward declaration of data plane context struct. */
@@ -474,6 +483,12 @@ struct bfd_global {
 	int bg_dplane_sock;
 	struct event *bg_dplane_sockev;
 	struct dplane_queue bg_dplaneq;
+
+	/**
+	 * Adresses (strings) on which bfdd should accept incoming packets.
+	 * Only for shop and mhop modes (not echo mode).
+	 */
+	struct list *bg_local_addresses;
 
 	/* Debug options. */
 	/* Show distributed BFD debug messages. */
@@ -525,10 +540,10 @@ int bp_set_tosv6(int sd, uint8_t value);
 int bp_set_tos(int sd, uint8_t value);
 int bp_bind_dev(int sd, const char *dev);
 
-int bp_udp_shop(const struct vrf *vrf);
-int bp_udp_mhop(const struct vrf *vrf);
-int bp_udp6_shop(const struct vrf *vrf);
-int bp_udp6_mhop(const struct vrf *vrf);
+int bp_udp_shop(const struct vrf *vrf, struct sockaddr_in *local_addr);
+int bp_udp_mhop(const struct vrf *vrf, struct sockaddr_in *local_addr);
+int bp_udp6_shop(const struct vrf *vrf, struct sockaddr_in6 *local_addr);
+int bp_udp6_mhop(const struct vrf *vrf, struct sockaddr_in6 *local_addr);
 int bp_peer_socket(const struct bfd_session *bs);
 int bp_peer_socketv6(const struct bfd_session *bs);
 int bp_echo_socket(const struct vrf *vrf);
