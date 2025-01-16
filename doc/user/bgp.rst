@@ -31,7 +31,9 @@ be specified (:ref:`common-invocation-options`).
    Specify specific IP addresses for bgpd to listen on, rather than its default
    of ``0.0.0.0`` / ``::``. This can be useful to constrain bgpd to an internal
    address, or to run multiple bgpd processes on one host. Multiple addresses
-   can be specified.
+   can be specified. Bind to the addresses will be done in all VRFs, but socket
+   binding errors in non default VRF are allowed. If bind fails in the default
+   VRF, bgpd will terminate.
 
    In the following example, bgpd is started listening for connections on the
    addresses 100.0.1.2 and fd00::2:2. The options -d (runs in daemon mode) and
@@ -39,7 +41,8 @@ be specified (:ref:`common-invocation-options`).
    are likely to run multiple bgpd instances, each one with different
    configurations, when using -l option.
 
-   Note that this option implies the --no_kernel option, and no learned routes will be installed into the linux kernel.
+   Note that this option implies the --no_kernel option, and no learned routes
+   will be installed into the linux kernel.
 
 .. code-block:: shell
 
