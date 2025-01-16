@@ -1,0 +1,44 @@
+[
+    {
+        "diagnostic": "ok",
+        "id": "*",
+        "local": "10.1.0.12",
+        "multihop": false,
+        "peer": "10.1.0.2",
+        "remote-diagnostic": "ok",
+        "remote-id": "*",
+        "status": "up",
+        "uptime": "*"
+    },
+    {
+        "diagnostic": "*",
+        "id": "*",
+        "local": "10.1.0.13",
+        "multihop": false,
+        "peer": "10.1.0.3",
+        "remote-id": "*",
+        "status": "*",
+        "uptime": null
+    },
+    {
+        "diagnostic": "ok",
+        "id": "*",
+        "local": "fd00:3::12",
+        "multihop": false,
+        "peer": "fd00:3::2",
+        "remote-diagnostic": "ok",
+        "remote-id": "*",
+        "status": "up",
+        "uptime": "*"
+    },
+    {
+        "diagnostic": "*",
+        "id": "*",
+        "local": "fd00:3::13",
+        "multihop": false,
+        "peer": "fd00:3::3",
+        "remote-id": "*",
+        "status": "*",
+        "uptime": null
+    }
+]
